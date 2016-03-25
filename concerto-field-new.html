@@ -127,8 +127,8 @@
             this.fieldConfig['exit_transition'] = 'transform-animation';
           }
           // animate the content element
-          this.animationConfig['entry']['node'] = this.$.content;
-          this.animationConfig['entry']['name'] = this.fieldConfig['entry_transition'];
+          this.animationConfig['exit']['node'] = this.$.content;
+          this.animationConfig['exit']['name'] = this.fieldConfig['exit_transition'];
         }
       },
 
@@ -153,7 +153,7 @@
       ready: function() {
         // Begin fetching content for our field
         this.$.contentsData.url = this.contentsUrl;
-        this.fetchContent();
+        this.loadNextContent();
       },
 
       fetchContent: function() {
@@ -210,15 +210,16 @@
           };
         }
 
+        // Queue is empty, then fetch more content
+        if (this.contentQueue.length < 1 || this.fieldName != "Time") {
+          this.fetchContent();
+        }
+
         // Content Data is empty, check for errors
         if (!contentData) {
+          // There was no content in the queue, try again in a few seconds.
           console.log('No content available for field ' + this.fieldId);
-
-          // Queue is empty, then fetch more content
-          if (this.contentQueue.length < 1) {
-            this.fetchContent();
-          }
-
+          this.scheduleNextContent(10 * 1000);
           // Our field hasn't been updated with new content in a while
           // Clear the stale content from the field 
           if (this.lastUpdated > 0 && Math.abs((this.lastUpdated - Date.now()) / 1000) > 60) {
@@ -233,11 +234,31 @@
             };
             // Add placeholder content into empty field
             this.loadContent(contentData);
+            this.lastUpdated = 0;
           }
         } 
         // Content failed to load in our field properly
         else if (!this.loadContent(contentData)) {
-          
+          // The contend failed to load.
+          console.log('Unable to load ' + contentData.type + ' content for field ' + this.fieldId);
+          this.contentErrorCount++;
+          // Allow the field to retry 5 times quickly.
+          if (this.contentErrorCount <= 5) {
+            // Move on to the next content -- instead of calling recursively, use the scheduler
+            // this.loadNextContent();
+            if (this.isDebouncerActive('updateFieldContent' + this.fieldId)) {
+              // if there is a pending call then do it now
+              this.flushDebouncer('updateFieldContent' + this.fieldId);
+            } else {
+              this.scheduleNextContent(1);
+            }
+          } 
+          else {
+            // Schedule a delayed retry of up to 5 minutes.
+            var retryDuration = Math.min((this.contentErrorCount - 1) * 30, 600);
+            console.log('Retrying in ' + retryDuration + ' seconds.');
+            this.scheduleNextContent(retryDuration * 1000);
+          }
         }
         // The content loaded successfully 
         else {
