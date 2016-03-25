@@ -1,0 +1,310 @@
+<!--
+  The `concerto-field` element provides a field for a screen which manages
+  fetching and displaying content elements.
+-->
+<dom-module id="concerto-field">
+
+  <style>
+    :host {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    #content {
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+
+  <template> 
+    <iron-ajax
+      id="contentsData"
+      handle-as="json"
+      on-response="handleContents"
+      on-error="handleContentsError">
+    </iron-ajax>
+    <div id="content"></div>
+  </template>
+
+  <script>
+    Polymer({
+      is: "concerto-field",
+
+      behaviors: [
+        ConcertoBehaviors.ContentFactory,
+        Polymer.NeonAnimationRunnerBehavior
+      ],
+
+      properties: {
+        screenId: Number,
+        baseUrl: String,
+        fieldId: Number,
+        fieldName: String,
+        currentContent: Object,
+        currentStyle: String,
+        contentsUrl : {
+          type: String,
+          computed: 'computeContentsUrl(baseUrl, screenId, fieldId)'
+        },
+        contentQueue: {
+          type: Array,
+          value: function() { return [];}
+        },
+        cacheKey: {
+          type: String,
+          observer: '_cacheKeyChanged'
+        },
+        contentErrorCount: {
+          type: Number,
+          value: 0
+        },
+        timezone: {
+          type: String,
+          reflectToAttribute: true
+        },
+        fieldConfig: {
+          type: Object,
+          observer: '_configTransition'
+        },
+        animationConfig: {
+          type: Object,
+          value: function() {
+            return {
+              'entry': {
+                name: 'fade-in-animation',
+                node: this.$.content
+              },
+              'exit': {
+                name: 'fade-out-animation',
+                node: this.$.content
+              },
+            }
+          }
+        },
+        lastUpdated: {
+          type: Number,
+          value: 0
+        },
+        handleContentLoadedBound: Object
+      },
+
+      listeners: {
+        'neon-animation-finish': 'handleContentTransition'
+      },
+
+      computeContentsUrl: function(baseUrl, screenId, fieldId) {
+        // sets the contentUrl property which is used to fetch contents.json
+        return baseUrl + "/frontend/" + screenId + "/fields/" + fieldId + "/contents.json";
+      },
+
+      _cacheKeyChanged: function(newValue, oldValue) {
+        if (oldValue !== undefined && oldValue !== null && newValue !== oldValue) {
+          // alert concerto-screen the screen's setup has changed
+          // the screen will then reload with updated settings
+          this.fire('fieldCacheKeyChanged', {
+            newValue: newValue,
+            oldValue: oldValue
+          });
+        }
+      }, 
+
+      _configTransition: function() {
+        // Customize entry transition based on field configs
+        if (this.fieldConfig['entry_transition']) {
+          // the 'replace' field config should use the 'transform' animation
+          if (this.fieldConfig['entry_transition'] == 'replace') {
+            this.fieldConfig['entry_transition'] = 'transform-animation';
+          }
+          // animate the content element
+          this.animationConfig['entry']['node'] = this.$.content;
+          this.animationConfig['entry']['name'] = this.fieldConfig['entry_transition'];
+        }
+        // Customize exit transition based on field configs
+        if (this.fieldConfig['exit_transition']) {
+          // the 'replace' field config should use the 'transform' animation
+          if (this.fieldConfig['exit_transition'] == 'replace') {
+            this.fieldConfig['exit_transition'] = 'transform-animation';
+          }
+          // animate the content element
+          this.animationConfig['entry']['node'] = this.$.content;
+          this.animationConfig['entry']['name'] = this.fieldConfig['entry_transition'];
+        }
+      },
+
+      handleContentLoaded: function(event) {
+        // Handle a piece of content that has fired the 'load' event 
+        // the content is now ready to be displayed in our field
+        this.removeEventListener('load', this.handleContentLoadedBound);
+        this.displayContent(event.detail);
+      },  
+
+      handleContentTransition: function(event) {
+        if (!this.currentContent.opened) {
+          this.removeContent();  
+          this.appendNewContent();      
+        }
+      },
+
+      created: function() {
+        this.handleContentLoadedBound = this.handleContentLoaded.bind(this);
+      },
+
+      ready: function() {
+        // Begin fetching content for our field
+        this.$.contentsData.url = this.contentsUrl;
+        this.fetchContent();
+      },
+
+      fetchContent: function() {
+        // Make a request to our contentsUrl for contents.json
+        // Callback to handleContents() on success and handleContentsError() on failure 
+        this.$.contentsData.generateRequest();
+      },
+
+      handleContents: function(event, response) {
+        // Get the frontend setup cache key sent with each contents.json response
+        // this key indicates if screen settings have changed and if a reload is needed
+        var key = response.xhr.getResponseHeader('X-Concerto-Frontend-Setup-Key');
+        if (key) {
+          this.cacheKey = key;
+        }
+
+        // Add contents to our field's queue
+        Array.prototype.push.apply(this.contentQueue, response.response);
+
+        // Start displaying contents on the screen
+        if (!this.currentContent && this.contentQueue.length >= 1) {
+          console.log('Urgent content update for field ' + this.fieldId);
+          this.scheduleNextContent(1);
+        }
+      },
+
+      handleContentsError: function(event, response) {
+        console.log('Error retrieving content data for field ' + this.fieldId);
+      },
+
+      scheduleNextContent: function(msToWait) {
+        // Set a single job to load next piece of content into our field
+        this.debounce(
+          'updateFieldContent' + this.fieldId, 
+          function() {
+            this.loadNextContent();
+          },
+          msToWait
+        );
+      }, 
+
+      loadNextContent: function() {
+        // Remove and return first content from queue
+        var contentData = this.contentQueue.shift();
+
+        // case: field's kind is time, initialize content data 
+        if (this.fieldName == 'Time') {
+          var contentData = {
+            'duration': 15,
+            'id': 0,
+            'name': 'System Time',
+            'type': 'ClientTime',
+            'render_details': {'timezone': this.timezone}
+          };
+        }
+
+        // Content Data is empty, check for errors
+        if (!contentData) {
+          console.log('No content available for field ' + this.fieldId);
+
+          // Queue is empty, then fetch more content
+          if (this.contentQueue.length < 1) {
+            this.fetchContent();
+          }
+
+          // Our field hasn't been updated with new content in a while
+          // Clear the stale content from the field 
+          if (this.lastUpdated > 0 && Math.abs((this.lastUpdated - Date.now()) / 1000) > 60) {
+            console.log('Removing stale content from field ' + this.fieldId);
+            // Indicate our field is waiting to load fresh content 
+            var contentData = {
+              'duration': 10,
+              'id': 0,
+              'name': 'Empty Content - Waiting',
+              'type': 'Empty',
+              'render_details': {}
+            };
+            // Add placeholder content into empty field
+            this.loadContent(contentData);
+          }
+        } 
+        // Content failed to load in our field properly
+        else if (!this.loadContent(contentData)) {
+          
+        }
+        // The content loaded successfully 
+        else {
+          this.contentErrorCount = 0;
+        }
+      },
+
+      loadContent: function(contentData) {
+        if (!contentData) {
+          console.log('Missing content data for field ' + this.fieldId);
+          return false;
+        }
+
+        var simpleContentData = { 
+          title: contentData.name,
+          contentId: contentData.id,
+          duration: contentData.duration,
+          config: this.fieldConfig
+        };
+
+        // Flatten render_details into simpleContentData
+        Object.keys(contentData.render_details).forEach(
+          function(key) {
+            simpleContentData[key] = contentData.render_details[key];
+        });
+
+        // Fetch content object from factory based on type
+        var content = ConcertoBehaviors.ContentFactory.getType(contentData.type);
+
+        // Unable to find a content object of the specified type
+        if (!content) {
+          console.log('No content type registered for ' + contentData.type);
+          return false;
+        }
+
+        content.addEventListener('load', this.handleContentLoadedBound);
+        content.baseUrl = this.baseUrl;
+        content.cssText = this.contentStyle;
+        content.fromJSON(simpleContentData);
+        return true;
+      },
+
+      displayContent: function(content) {
+        if (content) {
+          this.currentContent = content;
+          this.playAnimation('exit');
+          this.scheduleNextContent(this.currentContent.duration * 1000);
+        }
+      },
+
+      appendNewContent: function() {
+        if (this.currentContent) {
+          this.$.content.appendChild(this.currentContent);
+          this.lastUpdated = Date.now();
+          this.currentContent.opened = true;
+          this.playAnimation('entry');
+        }
+      },
+
+      removeContent: function() {
+        var node = Polymer.dom(this.$.content).firstElementChild;
+        if (node) {
+          Polymer.dom(this.$.content).removeChild(node);
+          Polymer.dom.flush();
+        }
+      }
+
+    });
+  </script>
+</dom-module>

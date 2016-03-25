@@ -166,7 +166,7 @@
      * Currently this involves firing the `load` event, but the details may
      * change.
      */
-    _loaded: function() {
+    loaded: function() {
       this.fire('load', this);
     },
 
@@ -186,7 +186,7 @@
       }.bind(this));
       
       if (this.autoLoad) {
-        this._loaded();
+        this.loaded();
       }
     }
   };
